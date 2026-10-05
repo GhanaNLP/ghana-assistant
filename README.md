@@ -9,7 +9,7 @@ A small, fast assistant for Ghana built around one tiny model (**Flan-T5-small, 
 
 Answers are single-turn: one question, one answer (no conversation memory).
 
-> **Status:** the model is being trained and the Hugging Face artifacts are not published yet, so `GhanaAssistant()` will not download anything until then. The navigation pipeline (maps, name matching, routing, route plans) works today; see `tests/test_navigation.py`.
+**Try it:** web app on [Hugging Face Spaces](https://huggingface.co/spaces/ghananlpcommunity/ghana-assistant) · API `https://michsethowusuwfp--ghana-assistant-assistant-web.modal.run/ask` · model [ghananlpcommunity/ghana-assistant-flan-t5-small](https://huggingface.co/ghananlpcommunity/ghana-assistant-flan-t5-small) · data [ghananlpcommunity/ghana-assistant-data](https://huggingface.co/datasets/ghananlpcommunity/ghana-assistant-data)
 
 ## How it works
 
@@ -33,23 +33,46 @@ Unknown places are reported ("I don't know where X is…") instead of being swap
 
 ## Use it
 
+Everything (model, city maps, knowledge store) downloads from Hugging Face on first use (about 2 GB). Runs on CPU: about 2-4 s for directions, 1-2 s for knowledge answers.
+
+**1. Web interface + API on your machine**
 ```bash
-pip install git+https://github.com/GhanaNLP/ghana-assistant
-ghana-assistant "How do I get from Kejetia Market to Bantama Market?" --debug
+pip install "ghana-assistant[serve] @ git+https://github.com/GhanaNLP/ghana-assistant"
+ghana-assistant serve --port 8000
+```
+- Web interface: http://localhost:8000 (a question box, then the answer; not a chat)
+- API: `POST /ask` and interactive docs at http://localhost:8000/docs
+```bash
+curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
+     -d '{"question": "How do I get from Kejetia Market to Bantama Market?"}'
+# {"skill": "navigation", "city": "kumasi", "answer": "Start by heading north-west on ...", "plan": "...", "fields": {...}}
 ```
 
+**2. Command line**
+```bash
+ghana-assistant "What is around Asafo Market?" --debug
+```
+
+**3. Python**
 ```python
 from ghana_assistant import GhanaAssistant
-ga = GhanaAssistant()                 # downloads the model and data from Hugging Face
-print(ga.ask("What is around Asafo Market?")["answer"])
+ga = GhanaAssistant()
+print(ga.ask("What does the Ghana Cocoa Board do?")["answer"])
 ```
 
-Runtime pieces on Hugging Face (`ghananlpcommunity`): the model `ghana-assistant-flan-t5-small` and the data repo `ghana-assistant-data` (`maps/` city graphs, `knowledge/` phrase index: memory-mapped postings + SQLite with the sentences). Knowledge retrieval takes about 5 ms per question and about 100-300 MB of RAM. Override with `GA_MODEL_REPO` / `GA_DATA_REPO`.
+Responses: `skill` (`navigation` / `knowledge`), `answer`, and how it was grounded: `plan` (the route plan from the map) or `sources` (the dated sentences used).
 
 ## Deploy
 
-- **Inference on Modal:** `modal deploy deploy/modal_app.py` gives a `POST /ask` endpoint (`{"question": "..."}`). CPU-only; model and data are cached in a Modal volume. If the data repo is private, create a Modal secret `huggingface` with `HF_TOKEN` and deploy with `GA_USE_HF_SECRET=1`.
-- **Frontend on Hugging Face Spaces:** `space/` is a Gradio app that is deliberately not a chat: a question box, a "generating" view, then the answer with a collapsible "how this was grounded" section and an "Ask another question" button. Set the Space secret `ASSISTANT_URL` to the Modal endpoint.
+The same server (`ghana_assistant/server.py`: web interface at `/`, API at `/ask`, docs at `/docs`) runs locally, on Modal and behind the Space.
+
+- **Modal (CPU):**
+  ```bash
+  modal run deploy/modal_app.py::download   # once: cache the model and data in a Modal volume
+  modal deploy deploy/modal_app.py          # prints https://<workspace>--ghana-assistant-assistant-web.modal.run
+  ```
+  Cold start is about 30 s, then a few seconds per answer; at most 3 containers. CORS is open so browser pages can call it.
+- **Hugging Face Space (static HTML):** `python scripts/build_space.py <modal-url> --publish` puts the package's web page (`ghana_assistant/web/index.html`) on `ghananlpcommunity/ghana-assistant`, pointed at the API.
 
 ## Build the data and model
 
@@ -72,4 +95,4 @@ All data-processing, training, evaluation and experiment code is in this reposit
 ## Limitations
 - Only Accra and Kumasi have maps. Directions are only as good as OpenStreetMap; the router ignores turn restrictions.
 - Famous places with nicknames need an alias list (e.g. "KNUST").
-- Knowledge answers can only be as good as what retrieval finds; the model can still word things loosely.
+- Knowledge answers are weak: often not supported by the retrieved sentences and sometimes wrong. Treat them as unverified.

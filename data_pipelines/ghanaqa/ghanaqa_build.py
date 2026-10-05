@@ -230,27 +230,10 @@ elif stage == "select":
     yr = pd.to_numeric(pd.Series(DATE).str[:4], errors="coerce").values + (pd.to_numeric(pd.Series(DATE).str[5:7], errors="coerce").values - 1) / 12
     REC = np.where(np.isnan(yr), 0.5, np.clip((yr - 2010) / 16, 0, 1)).astype(np.float32)     # undated research = neutral
 
+    sys.path.insert(0, "ga_pkg"); from ghana_assistant.knowledge.phrases import rank_and_fill   # the exact runtime code
+
     def select(q_terms):
-        tj = [VOC[w] for w in q_terms if w in VOC]
-        if not tj: return []
-        rare = [j for j in tj if DF[j] <= COMMON]; common = [j for j in tj if DF[j] > COMMON]
-        base = rare or sorted(common, key=lambda j: DF[j])[:1]
-        cand = np.concatenate([IDS[OFFS[j]:OFFS[j + 1]] for j in base]); w = np.concatenate([np.full(DF[j], IDF[j], np.float32) for j in base])
-        u, inv = np.unique(cand, return_inverse=True); sc = np.bincount(inv, weights=w).astype(np.float32)
-        for j in (common if rare else [x for x in common if x not in base]):
-            p = IDS[OFFS[j]:OFFS[j + 1]]; pos = np.searchsorted(p, u); pos[pos >= len(p)] = 0; sc += np.where(p[pos] == u, IDF[j], 0).astype(np.float32)
-        sc = sc * (1 + 0.05 * REC[u])                                                # recency only breaks near-ties
-        order = u[np.argsort(-sc)[:POOL]]; used, per, seen, out = 0, {}, [], []
-        for s in order:
-            d = DOCI[s]
-            if per.get(d, 0) >= PER_DOC: continue
-            toks = set(re.findall(r"[a-z0-9]+", TEXT[s].lower()))
-            if any(len(toks & t) / max(1, len(toks | t)) > 0.8 for t in seen): continue
-            cost = int(TOKL[s]) + LINE_COST
-            if used + cost > BUDGET: continue
-            used += cost; per[d] = per.get(d, 0) + 1; seen.append(toks); out.append(int(s))
-            if used >= BUDGET - 20: break
-        return out
+        return rank_and_fill([VOC[w] for w in sorted(q_terms) if w in VOC], OFFS, IDS, REC, DOCI, TOKL, lambda sids: [TEXT[s] for s in sids])
 
     QN = [json.loads(l) for l in open(f"{OUT}/q_nouns.jsonl")]; t0 = time.time()
     with mp.Pool(18) as pool: R = pool.map(select, QN, chunksize=2000)

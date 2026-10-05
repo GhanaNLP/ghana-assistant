@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghana Assistant</title>
+<meta name="description" content="Landmark-based directions in Accra and Kumasi, and short answers about Ghana from news and research.">
+<style>
+  :root {
+    --bg: #f7f5f0; --surface: #ffffff; --text: #1d1b16; --muted: #6b665c; --border: #e3ded3;
+    --accent: #0b6b4f; --accent-text: #ffffff; --accent-soft: #e2f1eb; --gold: #b8860b; --danger: #a33a2a;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12130f; --surface: #1b1c17; --text: #ecebe6; --muted: #a29d91; --border: #2f2f28;
+      --accent: #3fb68b; --accent-text: #08130e; --accent-soft: #1d3a2f; --gold: #d9a93a; --danger: #e07a68;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12130f; --surface: #1b1c17; --text: #ecebe6; --muted: #a29d91; --border: #2f2f28;
+    --accent: #3fb68b; --accent-text: #08130e; --accent-soft: #1d3a2f; --gold: #d9a93a; --danger: #e07a68;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+  header h1 { margin: 0 0 4px; font-size: 1.9rem; letter-spacing: -.01em; }
+  header h1 span { color: var(--gold); }
+  header p { margin: 0 0 28px; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); }
+  label { display: block; font-weight: 600; margin-bottom: 8px; }
+  textarea { width: 100%; min-height: 110px; resize: vertical; padding: 14px; border-radius: 12px; border: 1px solid var(--border);
+             background: var(--bg); color: var(--text); font: inherit; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  .row { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-top: 12px; flex-wrap: wrap; }
+  .hint { color: var(--muted); font-size: .85rem; }
+  button.primary { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 999px; padding: 11px 22px;
+                   font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; }
+  .examples { margin-top: 22px; }
+  .examples h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 999px; padding: 7px 13px;
+          font: inherit; font-size: .9rem; cursor: pointer; text-align: left; }
+  .chip:hover { border-color: var(--accent); }
+  .waiting { text-align: center; padding: 48px 16px; }
+  .spinner { width: 38px; height: 38px; margin: 0 auto 18px; border-radius: 50%; border: 3px solid var(--accent-soft); border-top-color: var(--accent);
+             animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+  .waiting p { margin: 4px 0; } .waiting .sub { color: var(--muted); font-size: .9rem; }
+  .badge { display: inline-block; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 11px;
+           font-size: .8rem; font-weight: 600; }
+  .question { color: var(--muted); font-style: italic; margin: 12px 0 14px; overflow-wrap: anywhere; }
+  .answer { font-size: 1.12rem; line-height: 1.7; overflow-wrap: anywhere; }
+  .answer.error { color: var(--danger); }
+  details { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
+  details pre { white-space: pre-wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+                font-size: .82rem; line-height: 1.5; overflow-x: auto; }
+  details ul { padding-left: 18px; margin: 10px 0 0; font-size: .9rem; } details li { margin-bottom: 6px; }
+  .actions { margin-top: 22px; }
+  footer { margin-top: 36px; color: var(--muted); font-size: .82rem; }
+  footer a { color: inherit; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Ghana <span>Assistant</span></h1>
+    <p>Ask for <strong>directions in Accra or Kumasi</strong> using landmarks, or ask a <strong>question about Ghana</strong> from news and research. Each question is answered on its own.</p>
+  </header>
+
+  <section id="ask-view" class="card" aria-labelledby="q-label">
+    <label id="q-label" for="q">Your question</label>
+    <textarea id="q" maxlength="500" placeholder="e.g. How do I get from Kejetia Market to Bantama Market?"></textarea>
+    <div class="row">
+      <span class="hint">Press Ctrl/⌘ + Enter to ask</span>
+      <button id="ask" class="primary">Ask</button>
+    </div>
+    <div class="examples">
+      <h2>Try one</h2>
+      <div class="chips" id="chips"></div>
+    </div>
+  </section>
+
+  <section id="wait-view" class="card waiting" hidden aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div>
+    <p><strong>Generating your answer…</strong></p>
+    <p class="sub">Finding the facts first (a route on the map, or matching news and research), then writing the reply.<br>The first question after a quiet spell can take up to a minute while the assistant wakes up.</p>
+  </section>
+
+  <section id="answer-view" class="card" hidden aria-live="polite">
+    <span id="badge" class="badge"></span>
+    <p id="question" class="question"></p>
+    <div id="answer" class="answer"></div>
+    <details id="details" hidden>
+      <summary>How this answer was grounded</summary>
+      <div id="details-body"></div>
+    </details>
+    <div class="actions"><button id="again" class="primary">Ask another question</button></div>
+  </section>
+
+  <footer>
+    Directions use OpenStreetMap (© OpenStreetMap contributors) and Foursquare OS Places; knowledge answers come from Ghanaian news and KNUST research and can be wrong, so check important facts.
+    · <a href="https://github.com/GhanaNLP/ghana-assistant" target="_blank" rel="noopener">Code</a>
+    · <a href="https://huggingface.co/ghananlpcommunity/ghana-assistant-flan-t5-small" target="_blank" rel="noopener">Model</a>
+  </footer>
+</main>
+
+<script>
+  const API = "__ASSISTANT_URL__".replace(/\/$/, "");   // "" when served by the API itself (same origin); the Modal URL in the HF Space
+  const EXAMPLES = [
+    "How do I get from Kejetia Market to Bantama Market?",
+    "I am at Accra Mall, how do I get to Kwame Nkrumah Circle without using the motorway?",
+    "What is around Asafo Market?",
+    "Is Suame Roundabout on the way from Kejetia Market to Suame Market?",
+    "What does the Ghana Cocoa Board do?"
+  ];
+  const $ = id => document.getElementById(id);
+  const views = { ask: $("ask-view"), wait: $("wait-view"), answer: $("answer-view") };
+  const show = name => Object.entries(views).forEach(([k, el]) => el.hidden = k !== name);
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+  EXAMPLES.forEach(t => {
+    const b = document.createElement("button"); b.className = "chip"; b.type = "button"; b.textContent = t;
+    b.onclick = () => { $("q").value = t; $("q").focus(); };
+    $("chips").appendChild(b);
+  });
+
+  async function ask() {
+    const q = $("q").value.trim();
+    if (!q) { $("q").focus(); return; }
+    show("wait");
+    let out;
+    try {
+      const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 120000);
+      const r = await fetch(API + "/ask", { method: "POST", headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({ question: q }), signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      out = await r.json();
+    } catch (e) {
+      out = { error: "The assistant could not be reached right now. Please try again in a moment." };
+    }
+    render(q, out);
+  }
+
+  function render(q, out) {
+    $("question").textContent = "“" + q + "”";
+    const ans = $("answer");
+    if (out.error) {
+      $("badge").textContent = "Sorry"; ans.textContent = out.error; ans.classList.add("error"); $("details").hidden = true;
+    } else {
+      ans.classList.remove("error");
+      $("badge").textContent = out.skill === "navigation" ? "Directions" + (out.city ? " · " + out.city[0].toUpperCase() + out.city.slice(1) : "") : "Ghana knowledge";
+      ans.textContent = out.answer || "";
+      let body = "";
+      if (out.plan) body = "<p class='hint'>Route plan from the map (roads, counted turns, landmarks):</p><pre>" + esc(out.plan) + "</pre>";
+      else if (out.sources && out.sources.length) body = "<p class='hint'>Sentences the answer was based on:</p><ul>" + out.sources.map(s => "<li>" + esc(s.line || s.text) + "</li>").join("") + "</ul>";
+      $("details-body").innerHTML = body; $("details").hidden = !body; $("details").open = false;
+    }
+    show("answer"); $("again").focus();
+  }
+
+  $("ask").onclick = ask;
+  $("q").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask(); });
+  $("again").onclick = () => { $("q").value = ""; show("ask"); $("q").focus(); };
+</script>
+</body>
+</html>

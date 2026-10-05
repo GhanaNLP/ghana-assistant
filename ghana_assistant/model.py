@@ -9,9 +9,9 @@ class AssistantModel:
         self.tok = AutoTokenizer.from_pretrained(repo)
         self.model = AutoModelForSeq2SeqLM.from_pretrained(repo).to(self.device).eval()
 
-    def _gen(self, text, max_new_tokens=200):
+    def _gen(self, text, max_new_tokens=200, **kw):
         enc = self.tok(text, return_tensors="pt", truncation=True, max_length=768).to(self.device)
-        with torch.no_grad(): out = self.model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False)
+        with torch.no_grad(): out = self.model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False, **kw)
         return self.tok.decode(out[0], skip_special_tokens=True).strip()
 
     def intent(self, message):
@@ -27,4 +27,7 @@ class AssistantModel:
         return self._gen(f"directions: Request: {message}\nRoute plan:\n{skeleton}")
 
     def answer(self, question, contexts):
-        return self._gen("answer: Question: " + question + "\nContext:\n" + "\n".join(f"{i+1}. {c}" for i, c in enumerate(contexts)))
+        # beam search + no repeated word pairs + a mild repetition penalty: fixes the repetition seen with greedy decoding on open questions
+        # (only here: directions legitimately repeat phrases like "on your left", so they keep plain greedy decoding)
+        return self._gen("answer: Question: " + question + "\nContext:\n" + "\n".join(f"{i+1}. {c}" for i, c in enumerate(contexts)),
+                         120, num_beams=4, no_repeat_ngram_size=2, repetition_penalty=1.3, early_stopping=True)

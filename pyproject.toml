@@ -10,6 +10,7 @@ dependencies = ["torch", "transformers>=4.45", "sentencepiece", "spacy>=3.7", "n
                 "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"]
 
 [project.optional-dependencies]
+serve = ["fastapi", "uvicorn"]
 maps = ["osmium"]
 train = ["accelerate", "datasets", "peft"]
 
@@ -22,3 +23,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["ghana_assistant*"]
+
+[tool.setuptools.package-data]
+ghana_assistant = ["web/*.html"]
