@@ -1,0 +1,16 @@
+.env
+*.env
+__pycache__/
+*.pyc
+*.pkl
+*.pbf
+*.parquet
+*.faiss
+*.npy
+*.jsonl
+*.map.gz
+out/
+runs/
+data/
+_work/
+.venv*/

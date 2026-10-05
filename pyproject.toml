@@ -1,0 +1,23 @@
+[project]
+name = "ghana-assistant"
+version = "0.1.0"
+description = "Small-model assistant for Ghana: landmark-based directions (Accra, Kumasi) and grounded answers about Ghana"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["torch", "transformers>=4.45", "sentencepiece", "sentence-transformers", "faiss-cpu", "networkx", "numpy",
+                "pandas", "pyarrow", "rapidfuzz", "huggingface_hub"]
+
+[project.optional-dependencies]
+maps = ["osmium"]
+train = ["accelerate", "datasets", "peft"]
+
+[project.scripts]
+ghana-assistant = "ghana_assistant.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ghana_assistant*"]
