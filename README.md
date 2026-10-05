@@ -5,7 +5,7 @@ A small, fast assistant for Ghana built around one tiny model (**Flan-T5-small, 
 | Skill | Example | Where the facts come from |
 |---|---|---|
 | **Directions** (Accra, Kumasi) | *How do I get from Kejetia Market to Bantama Market, avoiding Okomfo Anokye Road?* | Shortest path on an OpenStreetMap road graph, turned into a route plan with counted turns and landmarks at each turn |
-| **Ghana knowledge** | *Why is bird flu a concern for Ghana's poultry industry?* | Top-8 sentences from Ghanaian news and KNUST research, found with FAISS |
+| **Ghana knowledge** | *Why is bird flu a concern for Ghana's poultry industry?* | Sentences from Ghanaian news and KNUST research that share the question's noun phrases (dated, newest preferred on ties) |
 
 Answers are single-turn: one question, one answer (no conversation memory).
 
@@ -17,7 +17,7 @@ Answers are single-turn: one question, one answer (no conversation memory).
 message ─► model "intent:" ─┬─ navigation ─► model "parse:"  → {task, start, end, avoid, asked}
                             │                 → match names to landmarks (rapidfuzz) → route on the road graph
                             │                 → route plan ─► model "directions:" ─► spoken directions
-                            └─ knowledge  ─► bge-small embedding → FAISS top-8 sentences ─► model "answer:" ─► short answer
+                            └─ knowledge  ─► spaCy noun phrases → phrase index (memory-mapped) → up to 600 tokens of dated sentences ─► model "answer:" ─► short answer
 ```
 
 One model, four prefixes:
@@ -27,7 +27,7 @@ One model, four prefixes:
 | `intent:` | the user's message | `navigation` or `knowledge` |
 | `parse:` | a navigation message | `task: avoid \| start: … \| end: … \| avoid: …` |
 | `directions:` | message + route plan | spoken, landmark-based directions |
-| `answer:` | question + 8 retrieved sentences | a short answer |
+| `answer:` | question + retrieved dated sentences (`[2025-10] …`) | a short answer |
 
 Unknown places are reported ("I don't know where X is…") instead of being swapped for a lookalike.
 
@@ -44,7 +44,7 @@ ga = GhanaAssistant()                 # downloads the model and data from Huggin
 print(ga.ask("What is around Asafo Market?")["answer"])
 ```
 
-Runtime pieces on Hugging Face (`ghananlpcommunity`): the model `ghana-assistant-flan-t5-small` and the data repo `ghana-assistant-data` (`maps/` city graphs, `knowledge/` FAISS index + sentences). Override with `GA_MODEL_REPO` / `GA_DATA_REPO`.
+Runtime pieces on Hugging Face (`ghananlpcommunity`): the model `ghana-assistant-flan-t5-small` and the data repo `ghana-assistant-data` (`maps/` city graphs, `knowledge/` phrase index: memory-mapped postings + SQLite with the sentences). Knowledge retrieval takes about 5 ms per question and about 100-300 MB of RAM. Override with `GA_MODEL_REPO` / `GA_DATA_REPO`.
 
 ## Deploy
 
@@ -60,7 +60,7 @@ All data-processing, training, evaluation and experiment code is in this reposit
 | City maps from OSM (+ optional Foursquare landmarks) | `scripts/build_maps.py ghana-latest.osm.pbf out/maps` |
 | Navigation training data (scenarios, Gemini wording, fact-check) | `data_pipelines/navigation/` (released as dataset `ghanaopenai/ghana-landmark-navigation`) |
 | Route plan ("skeleton") format | `training/qwen_and_bakeoffs/prep_reasoning.py` |
-| GhanaQA corpus, embeddings, retrieval, FAISS | `data_pipelines/ghanaqa/ghanaqa_build.py corpus \| qa \| embed \| retrieve \| index` |
+| GhanaQA corpus, noun-phrase index, dates, context selection | `data_pipelines/ghanaqa/ghanaqa_build.py corpus \| qa \| nouns \| meta \| select` (embedding + FAISS stages kept for comparison) |
 | Train + evaluate the model (all four prefixes) | `training/t5_multi.py train …` / `eval …` |
 | Package and publish | `scripts/build_knowledge.py`, `scripts/publish_hf.py model \| data \| space` |
 

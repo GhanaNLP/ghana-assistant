@@ -18,10 +18,9 @@ class GhanaAssistant:
             if os.path.exists(p):
                 w = load_map(p); r = Resolver(w); self.maps[c] = (w, r, Planner(w, r))
         self.retriever = None
-        if knowledge and os.path.exists(os.path.join(self.data_dir, "knowledge", "index.faiss")):
-            from .knowledge.retriever import Retriever
-            self.retriever = Retriever(os.path.join(self.data_dir, "knowledge", "index.faiss"), os.path.join(self.data_dir, "knowledge", "sentences.parquet"),
-                                       config.EMBEDDER, config.QUERY_PREFIX)
+        if knowledge and os.path.exists(os.path.join(self.data_dir, "knowledge", "store.sqlite")):
+            from .knowledge.phrases import PhraseStore                # noun-phrase retrieval, memory-mapped (no embeddings, no FAISS)
+            self.retriever = PhraseStore(os.path.join(self.data_dir, "knowledge"))
 
     def _city(self, fields):
         names = [fields.get(k) for k in ("start", "end", "start_area", "end_area", "avoid", "asked")]
@@ -37,10 +36,11 @@ class GhanaAssistant:
             return dict(skill="navigation", answer=str(e), fields=fields, city=city)
         return dict(skill="navigation", answer=self.model.directions(message, skeleton), fields=fields, city=city, plan=skeleton)
 
-    def knowledge(self, question, k=8):
+    def knowledge(self, question):
         if not self.retriever: return dict(skill="knowledge", answer="The knowledge index is not loaded.")
-        hits = self.retriever.search(question, k)
-        return dict(skill="knowledge", answer=self.model.answer(question, [h["text"] for h in hits]), sources=hits)
+        hits = self.retriever.search(question)
+        if not hits: return dict(skill="knowledge", answer="I could not find anything about that in the news and research I know.", sources=[])
+        return dict(skill="knowledge", answer=self.model.answer(question, [h["line"] for h in hits]), sources=hits)
 
     def ask(self, message):
         intent = self.model.intent(message)

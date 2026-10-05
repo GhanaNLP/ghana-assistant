@@ -113,6 +113,157 @@ elif stage == "retrieve":
         outs[r.split].write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(f"RETRIEVE_DONE | batch-2 questions with known source article: {nb2:,} | source article in top-1: {100*hit1/max(nb2,1):.1f}% | in top-{K}: {100*hit8/max(nb2,1):.1f}%")
 
+elif stage == "nouns":
+    # Noun index: spaCy POS tags on all cores -> nouns (lemmatised) + proper-noun phrases ("john mahama") per sentence -> inverted index.
+    import spacy
+    nlp = spacy.load("en_core_web_sm", disable=["ner"])        # the parser is needed for noun phrases
+    t0 = time.time()
+
+    HYPH = re.compile(r"\b([A-Z][a-zA-Z]+(?:-[A-Z][a-zA-Z]+)+)\b")      # Ga-Mashie, Sekondi-Takoradi, Asante-Akim
+
+    EDGE_POS = ("DET", "PRON", "PUNCT", "PART", "CCONJ", "ADP", "SCONJ", "AUX", "SPACE")
+
+    def phrase_of(span):
+        """noun phrase -> cleaned key: no articles/pronouns/possessives/stop-words at the edges; words kept exactly as written
+        (singular and plural are separate terms). "the Ghana's poultry industries" -> "ghana poultry industries"."""
+        toks = [t for t in span if t.pos_ not in ("DET", "PRON", "PUNCT", "SPACE") and t.text.lower() not in ("'s", "’s")]
+        while toks and (toks[0].is_stop or toks[0].pos_ in EDGE_POS or not (toks[0].is_alpha or toks[0].like_num)): toks.pop(0)
+        while toks and (toks[-1].is_stop or toks[-1].pos_ in EDGE_POS or not toks[-1].is_alpha): toks.pop()
+        if not toks: return None
+        words = [t.text.lower() for t in toks]
+        p = " ".join(words).replace(" - ", "-"); return p if len(p) >= 2 else None
+
+    def terms_of(doc):
+        """noun phrases (main signal) + names (>=2 letters, hyphenated, mis-tagged capitalised words) + single nouns (backup)"""
+        out, run = set(), []
+        for ch in doc.noun_chunks:
+            p = phrase_of(ch)
+            if p:
+                out.add(p); w = p.split()
+                if len(w) >= 3: out.add(" ".join(w[-2:]))          # "ghana poultry industry" also as "poultry industry"
+        for t in doc:
+            name = t.is_alpha and (t.pos_ == "PROPN" or (t.is_title and not t.is_sent_start and t.i > 0 and t.pos_ not in ("PRON", "DET", "AUX", "ADP", "CCONJ", "SCONJ", "PART", "PUNCT")))
+            if name:
+                run.append(t.text.lower()); out.add(t.text.lower()); continue
+            if t.text == "-" and run: continue
+            if len(run) > 1: out.add(" ".join(run))
+            run = []
+            if t.pos_ == "NOUN" and t.is_alpha and len(t.text) > 2: out.add(t.text.lower())
+        if len(run) > 1: out.add(" ".join(run))
+        for h in HYPH.findall(doc.text):
+            out.add(h.lower()); out.update(p.lower() for p in h.split("-"))
+        return {x for x in out if len(x) >= 2}
+
+    S = pq.read_table(f"{OUT}/sentences.parquet", columns=["text"]).column("text").to_pylist()
+    vocab, post = {}, []
+    for sid, doc in enumerate(nlp.pipe(S, batch_size=2000, n_process=18)):
+        for w in terms_of(doc):
+            j = vocab.get(w)
+            if j is None: j = vocab[w] = len(post); post.append([])
+            post[j].append(sid)
+        if sid % 1_000_000 == 0: print(f"  corpus {sid:,}/{len(S):,} ({time.time()-t0:.0f}s)", flush=True)
+    terms = list(vocab); offs = np.zeros(len(post) + 1, np.int64); offs[1:] = np.cumsum([len(p) for p in post])
+    ids = np.fromiter((x for p in post for x in p), dtype=np.int32, count=int(offs[-1]))
+    np.savez(f"{OUT}/noun_index.npz", offs=offs, ids=ids, N=len(S)); json.dump(terms, open(f"{OUT}/noun_terms.json", "w"))
+    print(f"index: {len(terms):,} terms, {len(ids):,} postings ({time.time()-t0:.0f}s)", flush=True)
+    Q = pd.read_parquet(f"{OUT}/qa.parquet").question.tolist()
+    with open(f"{OUT}/q_nouns.jsonl", "w") as f:
+        for d in nlp.pipe(Q, batch_size=2000, n_process=18): f.write(json.dumps(sorted(terms_of(d))) + "\n")
+    print(f"NOUNS_DONE {time.time()-t0:.0f}s")
+
+elif stage == "retrieve_nouns":
+    import multiprocessing as mp
+    Z = np.load(f"{OUT}/noun_index.npz"); OFFS, IDS, N = Z["offs"], Z["ids"], int(Z["N"])
+    VOC = {w: i for i, w in enumerate(json.load(open(f"{OUT}/noun_terms.json")))}
+    DF = np.diff(OFFS); IDF = np.log((N + 1) / (DF + 1)); COMMON = 50_000          # nouns in >50k sentences only re-rank
+
+    def search(q_terms, k=K):
+        tj = [VOC[w] for w in q_terms if w in VOC]
+        if not tj: return [], []
+        rare = [j for j in tj if DF[j] <= COMMON]; common = [j for j in tj if DF[j] > COMMON]
+        base = rare or sorted(common, key=lambda j: DF[j])[:1]
+        cand = np.concatenate([IDS[OFFS[j]:OFFS[j + 1]] for j in base]); w = np.concatenate([np.full(DF[j], IDF[j], np.float32) for j in base])
+        u, inv = np.unique(cand, return_inverse=True); sc = np.bincount(inv, weights=w).astype(np.float32)
+        for j in (common if rare else [x for x in common if x not in base]):
+            p = IDS[OFFS[j]:OFFS[j + 1]]; pos = np.searchsorted(p, u); pos[pos >= len(p)] = 0; sc += np.where(p[pos] == u, IDF[j], 0).astype(np.float32)
+        top = np.argsort(-sc)[:k]; return u[top].tolist(), sc[top].round(3).tolist()
+
+    QN = [json.loads(l) for l in open(f"{OUT}/q_nouns.jsonl")]
+    t0 = time.time()
+    with mp.Pool(18) as pool: R = pool.map(search, QN, chunksize=2000)
+    print(f"searched {len(QN):,} questions in {time.time()-t0:.0f}s", flush=True)
+    S = pq.read_table(f"{OUT}/sentences.parquet").to_pandas(); qa = pd.read_parquet(f"{OUT}/qa.parquet")
+    text, doc = S.text.values, S.doc.values; outs = {sp: open(f"{OUT}/rag_noun_{sp}.jsonl", "w") for sp in ("train", "test_b1", "test_b2")}
+    hit1 = hit8 = nb2 = empty = 0
+    for r, qn, (top, sc) in zip(qa.itertuples(), QN, R):
+        empty += not top; docs = [doc[i] for i in top]
+        rec = dict(qid=int(r.qid), batch=r.batch, question=r.question, nouns=qn, contexts=[text[i] for i in top], context_docs=docs, scores=sc, answer=r.answer, source_url=r.source_url)
+        if r.batch == "b2" and r.source_url:
+            nb2 += 1; h = [d == r.source_url for d in docs]; hit1 += bool(h and h[0]); hit8 += any(h); rec["source_hit"] = any(h)
+        outs[r.split].write(json.dumps(rec, ensure_ascii=False) + "\n")
+    print(f"RETRIEVE_NOUNS_DONE | questions with no usable noun: {empty:,} | batch-2 source article in top-1: {100*hit1/nb2:.1f}% | in top-{K}: {100*hit8/nb2:.1f}%")
+
+elif stage == "meta":
+    # per sentence: article date (YYYY-MM; research has none) and exact Flan-T5 token length (for the context budget)
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+    from transformers import AutoTokenizer
+    S = pq.read_table(f"{OUT}/sentences.parquet", columns=["doc", "text", "source"]).to_pandas(); dates = {}
+    for f in ("citinews_scraped-data.csv", "myjoyonline.csv", "ghanaweb.csv"):
+        d = pd.read_csv(f"{RAW}/data/news/{f}", usecols=["url", "date"]); p = pd.to_datetime(d.date, errors="coerce", utc=True, format="mixed")
+        dates.update(zip(d.url.astype(str), p.dt.strftime("%Y-%m").fillna("")))
+    date = [("" if src == "knust" else dates.get(doc, "")) for doc, src in zip(S.doc.values, S.source.values)]
+    tok = AutoTokenizer.from_pretrained("google/flan-t5-small"); L = np.zeros(len(S), np.int16); T = S.text.tolist()
+    for i in range(0, len(T), 500_000): L[i:i + 500_000] = [len(x) for x in tok(T[i:i + 500_000], add_special_tokens=False)["input_ids"]]
+    pq.write_table(pa.table({"sid": S.index.values, "date": date, "toklen": L}), f"{OUT}/sentence_meta.parquet")
+    print(f"META_DONE dated sentences {sum(bool(x) for x in date):,}/{len(S):,} | median tokens {int(np.median(L))}")
+
+elif stage == "select":
+    # Inference-identical context selection: phrase/noun match (rarity-weighted) with a gentle recency boost (<= +5%),
+    # filled to a 600-token budget, <= 3 sentences per article, near-duplicates skipped, lines prefixed with [YYYY-MM] / [research].
+    import multiprocessing as mp
+    BUDGET, PER_DOC, POOL, LINE_COST = 600, 3, 300, 6
+    Z = np.load(f"{OUT}/noun_index.npz"); OFFS, IDS, N = Z["offs"], Z["ids"], int(Z["N"])
+    VOC = {w: i for i, w in enumerate(json.load(open(f"{OUT}/noun_terms.json")))}
+    DF = np.diff(OFFS); IDF = np.log((N + 1) / (DF + 1)); COMMON = 50_000
+    S = pq.read_table(f"{OUT}/sentences.parquet", columns=["doc", "text"]).to_pandas(); M = pq.read_table(f"{OUT}/sentence_meta.parquet").to_pandas()
+    TEXT = S.text.values; DOCI, DOCS = pd.factorize(S.doc.values); DATE = M.date.values; TOKL = M.toklen.values.astype(np.int32)
+    yr = pd.to_numeric(pd.Series(DATE).str[:4], errors="coerce").values + (pd.to_numeric(pd.Series(DATE).str[5:7], errors="coerce").values - 1) / 12
+    REC = np.where(np.isnan(yr), 0.5, np.clip((yr - 2010) / 16, 0, 1)).astype(np.float32)     # undated research = neutral
+
+    def select(q_terms):
+        tj = [VOC[w] for w in q_terms if w in VOC]
+        if not tj: return []
+        rare = [j for j in tj if DF[j] <= COMMON]; common = [j for j in tj if DF[j] > COMMON]
+        base = rare or sorted(common, key=lambda j: DF[j])[:1]
+        cand = np.concatenate([IDS[OFFS[j]:OFFS[j + 1]] for j in base]); w = np.concatenate([np.full(DF[j], IDF[j], np.float32) for j in base])
+        u, inv = np.unique(cand, return_inverse=True); sc = np.bincount(inv, weights=w).astype(np.float32)
+        for j in (common if rare else [x for x in common if x not in base]):
+            p = IDS[OFFS[j]:OFFS[j + 1]]; pos = np.searchsorted(p, u); pos[pos >= len(p)] = 0; sc += np.where(p[pos] == u, IDF[j], 0).astype(np.float32)
+        sc = sc * (1 + 0.05 * REC[u])                                                # recency only breaks near-ties
+        order = u[np.argsort(-sc)[:POOL]]; used, per, seen, out = 0, {}, [], []
+        for s in order:
+            d = DOCI[s]
+            if per.get(d, 0) >= PER_DOC: continue
+            toks = set(re.findall(r"[a-z0-9]+", TEXT[s].lower()))
+            if any(len(toks & t) / max(1, len(toks | t)) > 0.8 for t in seen): continue
+            cost = int(TOKL[s]) + LINE_COST
+            if used + cost > BUDGET: continue
+            used += cost; per[d] = per.get(d, 0) + 1; seen.append(toks); out.append(int(s))
+            if used >= BUDGET - 20: break
+        return out
+
+    QN = [json.loads(l) for l in open(f"{OUT}/q_nouns.jsonl")]; t0 = time.time()
+    with mp.Pool(18) as pool: R = pool.map(select, QN, chunksize=2000)
+    print(f"selected contexts for {len(QN):,} questions in {time.time()-t0:.0f}s", flush=True)
+    qa = pd.read_parquet(f"{OUT}/qa.parquet"); outs = {sp: open(f"{OUT}/rag_sel_{sp}.jsonl", "w") for sp in ("train", "test_b1", "test_b2")}
+    hit = nb2 = 0; nctx = []
+    for r, qn, sel in zip(qa.itertuples(), QN, R):
+        lines = [f"[{DATE[s] or 'research'}] {TEXT[s]}" for s in sel]; docs = [DOCS[DOCI[s]] for s in sel]; nctx.append(len(sel))
+        rec = dict(qid=int(r.qid), batch=r.batch, question=r.question, nouns=qn, contexts=lines, context_docs=docs, answer=r.answer, source_url=r.source_url)
+        if r.batch == "b2" and r.source_url: nb2 += 1; h = r.source_url in docs; hit += h; rec["source_hit"] = h
+        outs[r.split].write(json.dumps(rec, ensure_ascii=False) + "\n")
+    print(f"SELECT_DONE | sentences per question: mean {np.mean(nctx):.1f}, median {int(np.median(nctx))} | no context: {sum(n == 0 for n in nctx):,} | batch-2 source article selected: {100*hit/nb2:.1f}%")
+
 elif stage == "index":
     import faiss
     E = np.load(f"{OUT}/sent_emb.npy").astype(np.float32); d = E.shape[1]; nlist = 8192

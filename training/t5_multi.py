@@ -70,7 +70,7 @@ def load(path, n, seed=0):
 
 if a.mode == "train":
     tok = AutoTokenizer.from_pretrained(a.model); model = AutoModelForSeq2SeqLM.from_pretrained(a.model).cuda()
-    nav = load("data_reason/train.jsonl", a.nav); qa = load("ghanaqa/rag_train.jsonl", a.qa)
+    nav = load("data_reason/train.jsonl", a.nav); qa = load("ghanaqa/rag_sel_train.jsonl", a.qa)
     pairs = [(nav_src(r), r["answer"]) for r in nav] + [(qa_src(r), r["answer"]) for r in qa]
     # intent detection: navigation requests vs knowledge questions (labels come from which dataset a message is from)
     ni = [("intent: " + r["user"], "navigation") for r in random.Random(3).sample(nav, min(a.intent, len(nav)))]
@@ -134,7 +134,7 @@ else:
         cw = set(W(" ".join(ctx))); pw = [w for w in W(p) if len(w) > 3]; return sum(w in cw for w in pw) / max(1, len(pw))
     samples = []
     for split in ("test_b1", "test_b2"):
-        rows = load(f"ghanaqa/rag_{split}.jsonl", a.n_eval, seed=2); P = gen([qa_src(r) for r in rows]); g = defaultdict(list)
+        rows = load(f"ghanaqa/rag_sel_{split}.jsonl", a.n_eval, seed=2); P = gen([qa_src(r) for r in rows]); g = defaultdict(list)
         for r, t in zip(rows, P):
             key = "all"; m = dict(f1=f1(t, r["answer"]), rougeL=rougeL(t, r["answer"]), support=support(t, r["contexts"]))
             for k in ([key] + ([("hit" if r.get("source_hit") else "miss")] if "source_hit" in r else [])):
@@ -155,7 +155,7 @@ else:
     res["parse_errors"] = [(r["user"], g, p) for r, g, p in zip(pr, gold, pp) if p.strip() != g][:10]
     # intent detection on held-out messages from both skills
     im = [(r["user"], "navigation") for r in load("data_reason/test_area.jsonl", 500, seed=5)] + [(r["user"], "navigation") for r in load("data_reason/test_pair.jsonl", 500, seed=5)]
-    im += [(r["question"], "knowledge") for r in load("ghanaqa/rag_test_b1.jsonl", 500, seed=5)] + [(r["question"], "knowledge") for r in load("ghanaqa/rag_test_b2.jsonl", 500, seed=5)]
+    im += [(r["question"], "knowledge") for r in load("ghanaqa/rag_sel_test_b1.jsonl", 500, seed=5)] + [(r["question"], "knowledge") for r in load("ghanaqa/rag_sel_test_b2.jsonl", 500, seed=5)]
     pi = gen(["intent: " + m for m, _ in im], bs=128)
     res["intent_accuracy"] = round(sum(p.strip().lower() == y for p, (_, y) in zip(pi, im)) / len(im), 4)
     res["intent_errors"] = [(m, y, p) for p, (m, y) in zip(pi, im) if p.strip().lower() != y][:15]

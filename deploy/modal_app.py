@@ -6,8 +6,9 @@ import modal
 
 image = (modal.Image.debian_slim(python_version="3.11")
          .pip_install("torch", extra_index_url="https://download.pytorch.org/whl/cpu")
-         .pip_install("transformers>=4.45", "sentencepiece", "sentence-transformers", "faiss-cpu", "networkx", "numpy",
-                      "pandas", "pyarrow", "rapidfuzz", "huggingface_hub", "fastapi[standard]")
+         .pip_install("transformers>=4.45", "sentencepiece", "spacy>=3.7", "networkx", "numpy", "pandas", "pyarrow", "rapidfuzz",
+                      "huggingface_hub", "fastapi[standard]",
+                      "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl")
          .add_local_python_source("ghana_assistant"))
 app = modal.App("ghana-assistant", image=image)
 cache = modal.Volume.from_name("ghana-assistant-cache", create_if_missing=True)    # keeps model/data downloads between cold starts
