@@ -2,7 +2,8 @@
 
 Index:  noun phrases + names + single nouns per sentence (spaCy), kept exactly as written (plural != singular),
         stored as an inverted index (postings) that is memory-mapped from disk.
-Select: rarity-weighted phrase match, gentle recency boost (<= +5%), filled to a 600-token budget,
+Select: rarity-weighted phrase match, gentle recency boost (<= +5%), only sentences scoring >= 50% of the best match,
+        filled to at most a 600-token budget,
         at most 3 sentences per article, near-duplicates skipped; lines prefixed [YYYY-MM] or [research].
 The same functions build the training contexts, so training and inference see identical input.
 
@@ -14,7 +15,7 @@ Store layout (a folder):
 import os, re, sqlite3
 import numpy as np
 
-BUDGET, PER_DOC, POOL, LINE_COST, COMMON, RECENCY = 600, 3, 300, 6, 50_000, 0.05
+BUDGET, PER_DOC, POOL, LINE_COST, COMMON, RECENCY, FLOOR = 600, 3, 300, 6, 50_000, 0.05, 0.5
 HYPH = re.compile(r"\b([A-Z][a-zA-Z]+(?:-[A-Z][a-zA-Z]+)+)\b")              # Ga-Mashie, Sekondi-Takoradi
 EDGE_POS = ("DET", "PRON", "PUNCT", "PART", "CCONJ", "ADP", "SCONJ", "AUX", "SPACE")
 NOT_NAME_POS = ("PRON", "DET", "AUX", "ADP", "CCONJ", "SCONJ", "PART", "PUNCT")
@@ -72,7 +73,9 @@ def rank_and_fill(tids, OFFS, IDS, REC, DOCI, TOKL, text_of):
         p = np.asarray(IDS[OFFS[j]:OFFS[j + 1]]); pos = np.searchsorted(p, u); pos[pos >= len(p)] = 0
         sc += np.where(p[pos] == u, IDF[j], 0).astype(np.float32)
     sc = sc * (1 + RECENCY * np.asarray(REC[u]))
-    pool = u[np.argsort(-sc)[:POOL]]                                         # same sort as the training-data builder
+    keep = sc >= FLOOR * sc.max()                                               # relevance floor: never pad with weak matches
+    u, sc = u[keep], sc[keep]
+    pool = u[np.argsort(-sc)[:POOL]]
     texts = text_of([int(s) for s in pool])
     used, per, seen, out = 0, {}, [], []
     for s, txt in zip(pool, texts):

@@ -8,7 +8,7 @@ from collections import defaultdict
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, Trainer, TrainingArguments
 p = argparse.ArgumentParser(); p.add_argument("mode"); p.add_argument("--out"); p.add_argument("--run"); p.add_argument("--model", default="google/flan-t5-small")
 p.add_argument("--nav", type=int, default=0); p.add_argument("--qa", type=int, default=0); p.add_argument("--intent", type=int, default=50000, help="examples per class for intent detection"); p.add_argument("--parse", type=int, default=0, help="parse examples (0 = one per navigation example)"); p.add_argument("--epochs", type=float, default=1)
-p.add_argument("--bs", type=int, default=64); p.add_argument("--lr", type=float, default=5e-4); p.add_argument("--n_eval", type=int, default=500)
+p.add_argument("--bs", type=int, default=64); p.add_argument("--out_json"); p.add_argument("--tok", default="google/flan-t5-small"); p.add_argument("--lr", type=float, default=5e-4); p.add_argument("--n_eval", type=int, default=500)
 a = p.parse_args()
 
 
@@ -80,11 +80,16 @@ if a.mode == "train":
     pairs += ni + qi + pp; random.Random(1).shuffle(pairs)
     print(f"navigation {len(nav):,} + ghanaqa {len(qa):,} + intent {len(ni)+len(qi):,} + parse {len(pp):,} = {len(pairs):,} examples", flush=True)
     print("parse examples:", pp[:3], flush=True)
-    t0 = time.time(); ds = []
-    for i in range(0, len(pairs), 20000):
-        ch = pairs[i:i + 20000]
-        X = tok([x for x, _ in ch], truncation=True, max_length=768)["input_ids"]; Y = tok([y for _, y in ch], truncation=True, max_length=200)["input_ids"]
-        ds += [dict(input_ids=x, labels=y) for x, y in zip(X, Y)]
+    t0 = time.time(); ds = []; cache = f"{a.out}_tokenised.pkl"                 # restarts skip the ~8 min tokenisation
+    import pickle, os
+    if os.path.exists(cache): ds = pickle.load(open(cache, "rb")); print("loaded tokenised cache", flush=True)
+    else:
+        os.environ["TOKENIZERS_PARALLELISM"] = "true"
+        for i in range(0, len(pairs), 100000):
+            ch = pairs[i:i + 100000]
+            X = tok([x for x, _ in ch], truncation=True, max_length=768)["input_ids"]; Y = tok([y for _, y in ch], truncation=True, max_length=200)["input_ids"]
+            ds += [dict(input_ids=x, labels=y) for x, y in zip(X, Y)]
+        pickle.dump(ds, open(cache, "wb"), protocol=4)
     print(f"tokenised in {time.time()-t0:.0f}s | truncated inputs: {sum(len(d['input_ids']) >= 768 for d in ds):,}", flush=True)
 
     def collate(b):
@@ -96,13 +101,15 @@ if a.mode == "train":
     torch.backends.cuda.matmul.allow_tf32 = True
     args = TrainingArguments(output_dir=a.out, per_device_train_batch_size=a.bs, num_train_epochs=a.epochs, learning_rate=a.lr, lr_scheduler_type="cosine",
                              warmup_steps=500, tf32=True, logging_steps=200, save_strategy="steps", save_steps=5000, save_total_limit=2,
-                             report_to=[], remove_unused_columns=False, dataloader_num_workers=4, group_by_length=False)
+                             report_to=[], remove_unused_columns=False, dataloader_num_workers=4)
     Trainer(model=model, args=args, train_dataset=ds, data_collator=collate).train()
     model.save_pretrained(a.out); tok.save_pretrained(a.out); print("TRAIN_DONE", f"{time.time()-t0:.0f}s")
 
 else:
     sys.path.insert(0, "."); from factcheck import check
-    tok = AutoTokenizer.from_pretrained(a.run); model = AutoModelForSeq2SeqLM.from_pretrained(a.run).cuda().eval()
+    import os
+    tok = AutoTokenizer.from_pretrained(a.run if os.path.exists(f"{a.run}/tokenizer_config.json") else a.tok)   # checkpoints have no tokenizer
+    model = AutoModelForSeq2SeqLM.from_pretrained(a.run).cuda().eval()
     def gen(srcs, bs=64):
         out = []
         for i in range(0, len(srcs), bs):
@@ -159,4 +166,4 @@ else:
     pi = gen(["intent: " + m for m, _ in im], bs=128)
     res["intent_accuracy"] = round(sum(p.strip().lower() == y for p, (_, y) in zip(pi, im)) / len(im), 4)
     res["intent_errors"] = [(m, y, p) for p, (m, y) in zip(pi, im) if p.strip().lower() != y][:15]
-    print(json.dumps(res, indent=1)); json.dump(dict(results=res, samples=samples), open(f"{a.run}/eval.json", "w"), indent=1, ensure_ascii=False)
+    print(json.dumps(res, indent=1)); json.dump(dict(results=res, samples=samples), open(a.out_json or f"{a.run}/eval.json", "w"), indent=1, ensure_ascii=False)

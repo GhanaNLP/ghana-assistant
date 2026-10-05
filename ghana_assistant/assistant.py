@@ -11,7 +11,8 @@ from .navigation.planner import Planner, PlanError
 class GhanaAssistant:
     def __init__(self, model_repo=config.MODEL_REPO, data_repo=config.DATA_REPO, data_dir=None, device=None, knowledge=True):
         self.model = AssistantModel(model_repo, device)
-        self.data_dir = data_dir or snapshot_download(data_repo, repo_type="dataset", token=config.HF_TOKEN)
+        self.data_dir = data_dir or snapshot_download(data_repo, repo_type="dataset", token=config.HF_TOKEN,
+                                                          allow_patterns=["maps/*", "knowledge/*"])   # skip the training splits
         self.maps = {}
         for c in config.CITIES:
             p = os.path.join(self.data_dir, "maps", f"{c}.map.gz")
