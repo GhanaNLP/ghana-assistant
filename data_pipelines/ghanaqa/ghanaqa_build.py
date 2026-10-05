@@ -56,23 +56,51 @@ elif stage == "qa":
     print(f"QA_DONE raw {len(qa):,} -> unique {len(uniq):,} | b1 {len(b1):,}, b2 {len(b2):,} | splits {df.split.value_counts().to_dict()}")
     print(df.sample(3, random_state=2)[["question", "answer"]].to_dict("records"))
 
-elif stage == "embed":
-    import torch; from sentence_transformers import SentenceTransformer
-    m = SentenceTransformer(EMB, device="cuda"); m.half()
-    t0 = time.time(); S = pq.read_table(f"{OUT}/sentences.parquet", columns=["text"]).column("text").to_pylist()
-    E = m.encode(S, batch_size=1024, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False).astype(np.float16)
-    np.save(f"{OUT}/sent_emb.npy", E); print(f"corpus emb {E.shape} {time.time()-t0:.0f}s", flush=True)
-    Q = pd.read_parquet(f"{OUT}/qa.parquet").question.tolist()
-    QE = m.encode([QPFX + q for q in Q], batch_size=1024, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False).astype(np.float16)
-    np.save(f"{OUT}/q_emb.npy", QE); print(f"EMBED_DONE questions {QE.shape} {time.time()-t0:.0f}s")
+elif stage in ("embed", "embed_check"):
+    # Fast path: tokenise big chunks with the Rust tokenizer on all cores, then length-sorted fp16 batches on the GPU.
+    # bge-small = [CLS] token, L2-normalised (same as sentence-transformers with normalize_embeddings=True).
+    os.environ["TOKENIZERS_PARALLELISM"] = "true"
+    import torch; from transformers import AutoTokenizer, AutoModel
+    tok = AutoTokenizer.from_pretrained(EMB); model = AutoModel.from_pretrained(EMB, dtype=torch.float16).cuda().eval()
+
+    def embed(texts, name, max_len, bs=4096, chunk=500_000):
+        n = len(texts); out = np.zeros((n, model.config.hidden_size), np.float16); t0 = time.time()
+        for c0 in range(0, n, chunk):
+            enc = tok(texts[c0:c0 + chunk], truncation=True, max_length=max_len, padding=False)["input_ids"]   # parallel over all cores
+            lens = np.fromiter((len(x) for x in enc), dtype=np.int32, count=len(enc)); order = np.argsort(lens, kind="stable")
+            for b0 in range(0, len(order), bs):
+                idx = order[b0:b0 + bs]; L = int(lens[idx].max())
+                ids = np.zeros((len(idx), L), np.int64); att = np.zeros((len(idx), L), np.int64)
+                for j, i in enumerate(idx): ids[j, :lens[i]] = enc[i]; att[j, :lens[i]] = 1
+                with torch.inference_mode():
+                    h = model(input_ids=torch.from_numpy(ids).cuda(non_blocking=True), attention_mask=torch.from_numpy(att).cuda(non_blocking=True)).last_hidden_state[:, 0]
+                    out[c0 + idx] = torch.nn.functional.normalize(h.float(), dim=-1).half().cpu().numpy()
+            done = min(c0 + chunk, n); el = time.time() - t0
+            print(f"{name}: {done:,}/{n:,} | {el:.0f}s | {done/el:,.0f}/s | ETA {el/done*(n-done):.0f}s", flush=True)
+        return out
+
+    S = pq.read_table(f"{OUT}/sentences.parquet", columns=["text"]).column("text").to_pylist()
+    if stage == "embed_check":                                  # must match sentence-transformers on a sample
+        from sentence_transformers import SentenceTransformer
+        samp = S[:: max(1, len(S) // 2000)][:2000]
+        ref = SentenceTransformer(EMB, device="cuda").encode(samp, normalize_embeddings=True, batch_size=256)
+        mine = embed(samp, "check", 128, bs=512).astype(np.float32)
+        cos = (ref * mine).sum(1); print(f"EMBED_CHECK cosine vs sentence-transformers: mean {cos.mean():.5f}, min {cos.min():.5f}")
+    else:
+        E = embed(S, "corpus", 256); np.save(f"{OUT}/sent_emb.npy", E)
+        Q = pd.read_parquet(f"{OUT}/qa.parquet").question.tolist()
+        QE = embed([QPFX + q for q in Q], "questions", 96); np.save(f"{OUT}/q_emb.npy", QE)
+        print(f"EMBED_DONE corpus {E.shape} questions {QE.shape}")
 
 elif stage == "retrieve":
     import torch
     S = pq.read_table(f"{OUT}/sentences.parquet").to_pandas(); qa = pd.read_parquet(f"{OUT}/qa.parquet")
     E = torch.from_numpy(np.load(f"{OUT}/sent_emb.npy")).cuda(); QE = torch.from_numpy(np.load(f"{OUT}/q_emb.npy")).cuda()
     top = np.zeros((len(qa), K), dtype=np.int64); sc = np.zeros((len(qa), K), dtype=np.float32); t0 = time.time()
-    for i in range(0, len(qa), 4096):
-        s = QE[i:i + 4096] @ E.T; v, ix = torch.topk(s.float(), K, dim=1); top[i:i + 4096] = ix.cpu().numpy(); sc[i:i + 4096] = v.cpu().numpy()
+    QB = 512                                                    # 512 x 6.3M fp16 scores = ~6.4 GB per step (the GPU is shared)
+    for i in range(0, len(qa), QB):
+        v, ix = torch.topk(QE[i:i + QB] @ E.T, K, dim=1); top[i:i + QB] = ix.cpu().numpy(); sc[i:i + QB] = v.float().cpu().numpy()
+        if i % (QB * 400) == 0: print(f"  {i:,}/{len(qa):,} questions ({time.time()-t0:.0f}s)", flush=True)
     print(f"retrieved {len(qa):,} x top{K} in {time.time()-t0:.0f}s", flush=True)
     text, doc = S.text.values, S.doc.values
     outs = {sp: open(f"{OUT}/rag_{sp}.jsonl", "w") for sp in ("train", "test_b1", "test_b2")}; hit1 = hit8 = nb2 = 0

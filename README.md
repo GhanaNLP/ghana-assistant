@@ -53,12 +53,14 @@ Runtime pieces on Hugging Face (`ghananlpcommunity`): the model `ghana-assistant
 
 ## Build the data and model
 
+All data-processing, training, evaluation and experiment code is in this repository; see **[docs/PIPELINE.md](docs/PIPELINE.md)** for every script in the order it was used.
+
 | Step | Script |
 |---|---|
 | City maps from OSM (+ optional Foursquare landmarks) | `scripts/build_maps.py ghana-latest.osm.pbf out/maps` |
-| Navigation training data (scenarios, Gemini wording, fact-check) | [GhanaOpenAI/ghana-landmark-navigation](https://github.com/GhanaOpenAI/ghana-landmark-navigation), dataset `ghanaopenai/ghana-landmark-navigation` |
-| Route plan ("skeleton") format | `training/prep_reasoning.py` |
-| GhanaQA corpus, embeddings, retrieval, FAISS | `training/ghanaqa_build.py corpus \| qa \| embed \| retrieve \| index` |
+| Navigation training data (scenarios, Gemini wording, fact-check) | `data_pipelines/navigation/` (released as dataset `ghanaopenai/ghana-landmark-navigation`) |
+| Route plan ("skeleton") format | `training/qwen_and_bakeoffs/prep_reasoning.py` |
+| GhanaQA corpus, embeddings, retrieval, FAISS | `data_pipelines/ghanaqa/ghanaqa_build.py corpus \| qa \| embed \| retrieve \| index` |
 | Train + evaluate the model (all four prefixes) | `training/t5_multi.py train …` / `eval …` |
 | Package and publish | `scripts/build_knowledge.py`, `scripts/publish_hf.py model \| data \| space` |
 
